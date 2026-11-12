@@ -5,6 +5,8 @@ from __future__ import annotations
 import argparse
 from pathlib import Path
 import sys
+import time
+from typing import Any
 
 from benzene_langgraph.chemistry import KekuleIsomer, verify_benzene_topology
 from benzene_langgraph.graph import build_benzene_graph
@@ -41,14 +43,30 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument(
         "--hydrogen-thinking",
         choices=("low", "medium", "high", "xhigh"),
-        default="high",
-        help="Thinking level for Gemini 4 Hydrogen nodes.",
+        default="medium",
+        help="Thinking level for Gemini 4 Hydrogen nodes (default: medium).",
     )
     parser.add_argument(
         "--carbon-thinking",
         choices=("low", "medium", "high"),
-        default="medium",
-        help="Thinking level for Gemini 4 Carbon nodes.",
+        default="low",
+        help="Thinking level for Gemini 4 Carbon nodes (default: low to stay under 60s HTTP header cutoff).",
+    )
+    parser.add_argument(
+        "--vertexai",
+        action="store_true",
+        default=None,
+        help="Route all nodes directly through Google Cloud Vertex AI ADC.",
+    )
+    parser.add_argument(
+        "--project",
+        default=None,
+        help="Optional GCP project ID when using Vertex AI (auto-detected from ADC if omitted).",
+    )
+    parser.add_argument(
+        "--location",
+        default="global",
+        help="Vertex AI location for Gemini 4 models (default: global).",
     )
     parser.add_argument(
         "--mock",
@@ -77,7 +95,7 @@ def main(argv: list[str] | None = None) -> int:
     use_mock = args.mock
     if not use_mock and not has_gemini_credentials() and not args.mermaid:
         print(
-            "Note: GEMINI_API_KEY / GOOGLE_API_KEY not set; falling back to --mock mode.",
+            "Note: No GEMINI_API_KEY / GOOGLE_API_KEY or Vertex AI ADC found; falling back to --mock mode.",
             file=sys.stderr,
         )
         use_mock = True
@@ -88,6 +106,9 @@ def main(argv: list[str] | None = None) -> int:
         hydrogen_thinking=args.hydrogen_thinking,
         carbon_thinking=args.carbon_thinking,
         mock=use_mock,
+        vertexai=args.vertexai,
+        project=args.project,
+        location=args.location,
     )
     report = verify_benzene_topology(compiled, isomer=isomer)
 
@@ -98,11 +119,26 @@ def main(argv: list[str] | None = None) -> int:
     print(
         f"Verified Kekulé Benzene (C6H6, Isomer {report.isomer}) | "
         f"Edges: {report.total_covalent_edges} | "
-        f"Ring bonds: {report.ring_bond_orders}"
+        f"Ring bonds: {report.ring_bond_orders}",
+        flush=True,
     )
-    result = compiled.invoke({"prompt": args.prompt})
-    print("\nExecution trace:", " -> ".join(result.get("execution_trace", [])))
-    print("\n" + result.get("aromatic_synthesis", ""))
+
+    t0 = time.monotonic()
+    final_state: dict[str, Any] = {}
+    for mode, payload in compiled.stream(
+        {"prompt": args.prompt},
+        stream_mode=["updates", "values"],
+    ):
+        if mode == "updates" and isinstance(payload, dict):
+            elapsed = time.monotonic() - t0
+            for node_name, node_out in payload.items():
+                traces = node_out.get("execution_trace", [node_name]) if isinstance(node_out, dict) else [node_name]
+                print(f"  [{elapsed:5.1f}s] ✓ {', '.join(traces)}", file=sys.stderr, flush=True)
+        elif mode == "values" and isinstance(payload, dict):
+            final_state = payload
+
+    print("\nExecution trace:", " -> ".join(final_state.get("execution_trace", [])))
+    print("\n" + final_state.get("aromatic_synthesis", ""))
     return 0
 
 

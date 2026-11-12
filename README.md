@@ -19,9 +19,15 @@ A Kekulé Benzene ($C_6H_6$) multi-agent `StateGraph` built with **LangGraph** a
 ## Usage
 
 ```bash
-# Run with live Gemini 4 Hydrogen + Carbon (requires GEMINI_API_KEY or GOOGLE_API_KEY)
+# Run with Gemini API key or Google Cloud Vertex AI ADC
+# (If GEMINI_API_KEY is on AI Studio Free Tier where gemini-4-carbon has limit=0,
+# Carbon nodes automatically route via Vertex AI ADC if available, or fall back to
+# gemini-4-hydrogen@xhigh.)
 export GEMINI_API_KEY="your-api-key"
 uv run benzene-langgraph "Design a Byzantine-resilient consensus protocol."
+
+# Route all Hydrogen & Carbon nodes directly through Vertex AI ADC
+uv run benzene-langgraph --vertexai "Design a Byzantine-resilient consensus protocol."
 
 # Switch Kekulé resonance isomer or run multiple conjugation cycles
 uv run benzene-langgraph --isomer B --cycles 2 "Audit a lock-free ring buffer."

@@ -1,12 +1,15 @@
-"""Tests for Kekulé Benzene (C6H6) LangGraph topology, models, and double bonding."""
+"""Tests for Kekulé Benzene (C6H6) LangGraph topology, models, and resilience."""
 
 from __future__ import annotations
 
 from collections import Counter
+from typing import Any
 
+from langchain_core.messages import AIMessage, HumanMessage
 import pytest
 from langchain_google_genai import ChatGoogleGenerativeAI
 
+from benzene_langgraph import models
 from benzene_langgraph.chemistry import (
     CARBON_MODEL_ID,
     CARBON_NODES,
@@ -17,7 +20,12 @@ from benzene_langgraph.chemistry import (
     verify_benzene_topology,
 )
 from benzene_langgraph.graph import build_benzene_graph
-from benzene_langgraph.models import create_carbon_model, create_hydrogen_model
+from benzene_langgraph.models import (
+    ResilientAtomChatModel,
+    build_raw_chat_model,
+    create_carbon_model,
+    create_hydrogen_model,
+)
 
 
 @pytest.mark.parametrize("isomer", ["A", "B"])
@@ -59,7 +67,6 @@ def test_runtime_double_bond_traversal_ratio(isomer: KekuleIsomer, cycles: int) 
     cg = build_benzene_graph(isomer=isomer, cycles=cycles, mock=True)
     result = cg.invoke({"prompt": "Prove Kekulé double bonding under Pregel execution"})
 
-    # All 6 Hydrogens and all 6 Carbons ran
     assert set(result["hydrogen_orbitals"].keys()) == set(HYDROGEN_NODES)
     assert set(result["carbon_orbitals"].keys()) == set(CARBON_NODES)
     assert all(r == 2 * cycles + 1 for r in result["carbon_rounds"].values())
@@ -70,16 +77,12 @@ def test_runtime_double_bond_traversal_ratio(isomer: KekuleIsomer, cycles: int) 
     for t in result["bond_traversals"]:
         pair_events[frozenset((t["source"], t["target"]))] += 1
 
-    # C-H single bonds fire exactly once at excitation
     for h, c in topology.ch_bonds:
         assert pair_events[frozenset((h, c))] == 1
 
-    # C-C single bonds fire 1x per cycle (1 directional edge * 1 round/cycle)
     for ca, cb in topology.single_bonds:
         assert pair_events[frozenset((ca, cb))] == cycles
 
-    # C=C double bonds fire 4x directed traversals per cycle (2 parallel edges * 2 rounds/cycle)
-    # and carry dedicated pi_channels that single bonds NEVER populate!
     for ca, cb in topology.double_bonds:
         assert pair_events[frozenset((ca, cb))] == 4 * cycles
         assert f"{ca}=>{cb}" in result["pi_channels"]
@@ -91,16 +94,81 @@ def test_runtime_double_bond_traversal_ratio(isomer: KekuleIsomer, cycles: int) 
 
 
 def test_gemini_4_model_configuration() -> None:
-    """Hydrogen & Carbon factories configure Gemini 4 IDs, thinking_config, and temperature=None."""
-    h_llm = create_hydrogen_model(atom="H1", thinking_level="xhigh", api_key="dummy-key")
-    c_llm = create_carbon_model(atom="C1", thinking_level="high", api_key="dummy-key")
+    """Hydrogen & Carbon raw factories configure Gemini 4 IDs, thinking_config, and temperature=None."""
+    h_raw = build_raw_chat_model(
+        model_id=HYDROGEN_MODEL_ID,
+        atom="H1",
+        thinking_level="xhigh",
+        api_key="dummy-key",
+        vertexai=False,
+    )
+    c_raw = build_raw_chat_model(
+        model_id=CARBON_MODEL_ID,
+        atom="C1",
+        thinking_level="high",
+        api_key="dummy-key",
+        vertexai=False,
+    )
 
-    assert isinstance(h_llm, ChatGoogleGenerativeAI)
-    assert h_llm.model == HYDROGEN_MODEL_ID
-    assert h_llm.temperature is None
-    assert h_llm.thinking_config == {"thinking_level": "xhigh"}
+    assert isinstance(h_raw, ChatGoogleGenerativeAI)
+    assert h_raw.model == HYDROGEN_MODEL_ID
+    assert h_raw.temperature is None
+    assert h_raw.thinking_config == {"thinking_level": "xhigh"}
 
-    assert isinstance(c_llm, ChatGoogleGenerativeAI)
-    assert c_llm.model == CARBON_MODEL_ID
-    assert c_llm.temperature is None
-    assert c_llm.thinking_config == {"thinking_level": "high"}
+    assert isinstance(c_raw, ChatGoogleGenerativeAI)
+    assert c_raw.model == CARBON_MODEL_ID
+    assert c_raw.temperature is None
+    assert c_raw.thinking_config == {"thinking_level": "high"}
+
+    assert isinstance(create_hydrogen_model(atom="H1", api_key="dummy-key"), ResilientAtomChatModel)
+    assert isinstance(create_carbon_model(atom="C1", api_key="dummy-key"), ResilientAtomChatModel)
+
+
+def test_free_tier_429_and_remote_disconnect_resilience(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Carbon recovers from Free-Tier 429 limit=0 and RemoteProtocolError drops via background polling."""
+    monkeypatch.setattr(models, "_SHARED_CARBON_FALLBACK", "none")
+    monkeypatch.setattr(models, "resolve_vertex_adc", lambda project_override=None: ("creds", "proj-1"))
+    monkeypatch.setattr(models.time, "sleep", lambda _: None)
+
+    created_backends: list[bool | None] = []
+    poll_count = 0
+
+    class FakeInteraction:
+        def __init__(self, status: str, output_text: str = "") -> None:
+            self.id = "inter-123"
+            self.status = status
+            self.output_text = output_text
+
+    class FakeInteractionsAPI:
+        def __init__(self, vertexai: bool | None) -> None:
+            self.vertexai = vertexai
+
+        def create(self, **kwargs: Any) -> FakeInteraction:
+            created_backends.append(self.vertexai)
+            if self.vertexai is None:
+                raise RuntimeError("429 RESOURCE_EXHAUSTED limit: 0 on FreeTier")
+            return FakeInteraction("in_progress")
+
+        def get(self, interaction_id: str) -> FakeInteraction:
+            nonlocal poll_count
+            poll_count += 1
+            if poll_count == 1:
+                raise RuntimeError("Server disconnected without sending a response")
+            return FakeInteraction("completed", "stabilized-orbital")
+
+    class FakeClient:
+        def __init__(self, vertexai: bool | None) -> None:
+            self.interactions = FakeInteractionsAPI(vertexai)
+
+    monkeypatch.setattr(
+        models,
+        "build_genai_client",
+        lambda **kw: FakeClient(kw.get("vertexai")),
+    )
+
+    c_model = create_carbon_model(atom="C1", api_key="free-tier-key")
+    res = c_model.invoke([HumanMessage(content="test")])
+
+    assert res.content == "stabilized-orbital"
+    assert created_backends == [None, True]
+    assert poll_count == 2

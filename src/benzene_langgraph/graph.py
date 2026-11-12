@@ -57,6 +57,8 @@ def _make_hydrogen_node(
     mock: bool,
     api_key: str | None,
     vertexai: bool | None,
+    project: str | None,
+    location: str,
 ):
     facet_title, facet_desc = HYDROGEN_FACETS[atom]
     llm_cache: BaseChatModel | None = None
@@ -70,6 +72,8 @@ def _make_hydrogen_node(
                 mock=mock,
                 api_key=api_key,
                 vertexai=vertexai,
+                project=project,
+                location=location,
             )
 
         prompt = state.get("prompt", "")
@@ -80,7 +84,8 @@ def _make_hydrogen_node(
                     f"covalently single-bonded to {bonded_carbon} in a Kekulé Benzene (C6H6) "
                     f"reasoning ring.\n"
                     f"Your assigned facet: {facet_title} — {facet_desc}\n"
-                    "Produce a concise, high-signal analysis to donate across your C-H sigma bond."
+                    "Produce a tight, high-signal 3-5 bullet analysis (<=120 words) to donate "
+                    "across your C-H sigma bond."
                 )
             ),
             HumanMessage(content=prompt),
@@ -114,6 +119,8 @@ def _make_carbon_node(
     mock: bool,
     api_key: str | None,
     vertexai: bool | None,
+    project: str | None,
+    location: str,
 ):
     double_partner, double_orientation = topology.double_partner_of(atom)
     single_out = topology.outgoing_single_target(atom)
@@ -135,6 +142,8 @@ def _make_carbon_node(
                 mock=mock,
                 api_key=api_key,
                 vertexai=vertexai,
+                project=project,
+                location=location,
             )
 
         current_round = state.get("carbon_rounds", {}).get(atom, 0) + 1
@@ -179,7 +188,8 @@ def _make_carbon_node(
                     f"Your 4 covalent bonds: 1x C-H ({bonded_hydrogen}-{atom}), "
                     f"1x C-C single ({single_in or single_out}), and "
                     f"2x C=C double ({dimer_key}: sigma + pi).\n"
-                    "Synthesize and refine the reasoning passed strictly across your covalent bonds."
+                    "Synthesize and refine the reasoning passed strictly across your covalent bonds "
+                    "in one dense paragraph (<=120 words)."
                 )
             ),
             HumanMessage(content="\n".join(bond_context_lines)),
@@ -270,11 +280,13 @@ def build_benzene_graph(
     *,
     isomer: KekuleIsomer = "A",
     cycles: int = 1,
-    hydrogen_thinking: HydrogenThinkingLevel = "high",
-    carbon_thinking: CarbonThinkingLevel = "medium",
+    hydrogen_thinking: HydrogenThinkingLevel = "medium",
+    carbon_thinking: CarbonThinkingLevel = "low",
     mock: bool = False,
     api_key: str | None = None,
     vertexai: bool | None = None,
+    project: str | None = None,
+    location: str = "global",
 ) -> CompiledStateGraph:
     """Build and compile the 12-node Kekulé Benzene (C6H6) LangGraph.
 
@@ -284,9 +296,13 @@ def build_benzene_graph(
             sigma pass and 2 double-bond (sigma + pi) passes, preserving the 2:1 bond order.
         hydrogen_thinking: Gemini 4 Hydrogen thinking_level ("low" | "medium" | "high" | "xhigh").
         carbon_thinking: Gemini 4 Carbon thinking_level ("low" | "medium" | "high").
+            Defaults to "low" (~13s TTFT) to stay well under Google's 60s HTTP header cutoff
+            across 18 multi-node Carbon invocations.
         mock: If True, use deterministic offline MockAtomChatModel instances instead of API calls.
         api_key: Optional explicit Gemini API key (otherwise reads GEMINI_API_KEY / GOOGLE_API_KEY).
-        vertexai: Optional flag to route via Vertex AI.
+        vertexai: Optional flag to route via Vertex AI (auto-used as fallback if Free Tier 429 occurs).
+        project: Optional GCP project ID for Vertex AI (otherwise auto-detected from ADC).
+        location: Vertex AI location (default "global" for Gemini 4 models).
     """
     if cycles < 1:
         raise ValueError(f"cycles must be >= 1, got {cycles}")
@@ -306,6 +322,8 @@ def build_benzene_graph(
                 mock=mock,
                 api_key=api_key,
                 vertexai=vertexai,
+                project=project,
+                location=location,
             ),
             metadata={
                 "element": "H",
@@ -332,6 +350,8 @@ def build_benzene_graph(
                 mock=mock,
                 api_key=api_key,
                 vertexai=vertexai,
+                project=project,
+                location=location,
             ),
             metadata={
                 "element": "C",
