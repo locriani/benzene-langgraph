@@ -34,7 +34,7 @@ from langchain_core.outputs import ChatGeneration, ChatResult
 from langchain_google_genai import ChatGoogleGenerativeAI
 from pydantic import PrivateAttr
 
-from benzene_langgraph.chemistry import CARBON_MODEL_ID, HYDROGEN_MODEL_ID
+from benzene_langgraph.chemistry import ARGON_MODEL_ID, CARBON_MODEL_ID, HYDROGEN_MODEL_ID
 
 HydrogenThinkingLevel = Literal["low", "medium", "high", "xhigh"]
 CarbonThinkingLevel = Literal["low", "medium", "high"]
@@ -278,8 +278,8 @@ def run_carbon_background_interaction(
     thinking_level: str,
     poll_interval: float = 2.0,
     timeout: float = 1200.0,
-) -> str:
-    """Execute Gemini 4 Carbon via `interactions.create(background=True, store=True)`.
+) -> AIMessage:
+    """Execute Gemini 4 Carbon (or Argon) via `interactions.create(background=True, store=True)`.
 
     Short-lived poll GETs completely avoid 60-second GFE HTTP/1.1 header disconnects
     during extended Carbon thinking phases.
@@ -315,9 +315,20 @@ def run_carbon_background_interaction(
             f"Interaction {interaction_id} ({model_id}) ended with status={interaction.status!r}"
         )
 
+    usage = getattr(interaction, "usage", None)
+    usage_metadata = (
+        {
+            "input_tokens": usage.total_input_tokens or 0,
+            "output_tokens": usage.total_output_tokens or 0,
+            "total_tokens": usage.total_tokens or 0,
+        }
+        if usage is not None
+        else None
+    )
+
     output_text = getattr(interaction, "output_text", None)
     if isinstance(output_text, str) and output_text.strip():
-        return output_text.strip()
+        return AIMessage(content=output_text.strip(), usage_metadata=usage_metadata)
 
     # Fallback step extraction if output_text property is absent
     dump = interaction.model_dump() if hasattr(interaction, "model_dump") else {}
@@ -327,14 +338,14 @@ def run_carbon_background_interaction(
             for part in step.get("content", []) or []:
                 if isinstance(part, dict) and part.get("type") == "text":
                     chunks.append(str(part.get("text", "")))
-    return "".join(chunks).strip()
+    return AIMessage(content="".join(chunks).strip(), usage_metadata=usage_metadata)
 
 
 class ResilientAtomChatModel(BaseChatModel):
     """LangChain BaseChatModel using fast generate_content for Hydrogen and background Interactions for Carbon."""
 
     atom: str
-    element: Literal["H", "C"]
+    element: Literal["H", "C", "Ar"]
     gemini_model: str
     thinking_level: str
     timeout: float = 1200.0
@@ -423,14 +434,13 @@ class ResilientAtomChatModel(BaseChatModel):
             single_attempt_http=probe_fast,
         )
         prompt_text = format_messages_for_interaction(messages)
-        text = run_carbon_background_interaction(
+        return run_carbon_background_interaction(
             client=client,
-            model_id=CARBON_MODEL_ID,
+            model_id=self.gemini_model,
             prompt_text=prompt_text,
             thinking_level=self.thinking_level,
             timeout=self.timeout,
         )
-        return AIMessage(content=text)
 
     def _generate(
         self,
@@ -442,7 +452,7 @@ class ResilientAtomChatModel(BaseChatModel):
         last_exc: BaseException | None = None
         for attempt in range(self.max_transport_retries + 1):
             try:
-                if self.element == "C":
+                if self.element != "H":  # Carbon and Argon both think long; use background polling
                     ai_msg = self._invoke_carbon(messages, stop)
                 else:
                     ai_msg = self._invoke_hydrogen(messages, stop)
@@ -482,7 +492,7 @@ class MockAtomChatModel(BaseChatModel):
     """Deterministic BaseChatModel for offline simulation & topology testing."""
 
     atom: str
-    element: Literal["H", "C"]
+    element: Literal["H", "C", "Ar"]
     gemini_model: str
     thinking_level: str
 
@@ -574,3 +584,9 @@ def create_carbon_model(
         project=project,
         location=location,
     )
+
+
+def create_argon_model(*, atom: str = "Ar", thinking_level: CarbonThinkingLevel = "low", mock: bool = False) -> BaseChatModel:
+    """Instantiate a Gemini 4 Argon (`gemini-4-argon`) model: a noble gas, so it joins no ring (valency 0)."""
+    cls = MockAtomChatModel if mock else ResilientAtomChatModel
+    return cls(atom=atom, element="Ar", gemini_model=ARGON_MODEL_ID, thinking_level=thinking_level)

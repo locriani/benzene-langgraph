@@ -9,6 +9,7 @@ KekuleIsomer = Literal["A", "B"]
 
 HYDROGEN_MODEL_ID = "gemini-4-hydrogen"
 CARBON_MODEL_ID = "gemini-4-carbon"
+ARGON_MODEL_ID = "gemini-4-argon"
 
 HYDROGEN_NODES: tuple[str, ...] = ("H1", "H2", "H3", "H4", "H5", "H6")
 CARBON_NODES: tuple[str, ...] = ("C1", "C2", "C3", "C4", "C5", "C6")

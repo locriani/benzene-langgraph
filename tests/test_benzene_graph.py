@@ -172,3 +172,15 @@ def test_free_tier_429_and_remote_disconnect_resilience(monkeypatch: pytest.Monk
     assert res.content == "stabilized-orbital"
     assert created_backends == [None, True]
     assert poll_count == 2
+
+
+def test_benchmark_stoichiometry_and_huckel() -> None:
+    """The ledger sees all 24 graph calls vs. 1 per monatomic model, and only benzene is aromatic."""
+    from benzene_langgraph.bench import run
+
+    rows = {r["contestant"].split()[0]: r for r in run(("Is benzene aromatic?",), mock=True)}
+
+    assert set(rows) == {"C6H6", "H", "C", "Ar"}
+    assert rows["C6H6"]["calls"] == 24  # 6 Hydrogens + 6 Carbons x 3 rounds
+    assert all(rows[k]["calls"] == 1 for k in ("H", "C", "Ar"))
+    assert [k for k, r in rows.items() if r["huckel"]] == ["C6H6"]

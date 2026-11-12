@@ -38,4 +38,21 @@ uv run benzene-langgraph --mermaid
 
 # Run verification test suite
 uv run pytest -v
+
+# Aromatic Reasoning Benchmark (live, ~90 Gemini calls) or an offline dry run
+uv run python -m benzene_langgraph.bench
+uv run python -m benzene_langgraph.bench --mock
 ```
+
+## Benchmark
+
+The [Aromatic Reasoning Benchmark](BENCHMARK.md) runs the benzene graph against lone `gemini-4-hydrogen`, `gemini-4-carbon` and `gemini-4-argon` atoms. A blind judge scored three prompts per contestant (run 2026-11-12, raw data in [`benchmarks/results.json`](benchmarks/results.json)):
+
+| Contestant | Reaction time (s) | Calls | Molar mass (tokens) | Yield (0-100) | Hückel |
+|---|---:|---:|---:|---:|:---:|
+| C6H6 benzene graph | 98.8 | 24 | 25,587 | 58.7 | ✅ |
+| H (gemini-4-hydrogen) | 14.4 | 1 | 2,382 | 97.3 | ❌ |
+| C (gemini-4-carbon) | 62.9 | 1 | 1,417 | 96.7 | ❌ |
+| Ar (gemini-4-argon) | 75.5 | 1 | 1,364 | 95.7 | ❌ |
+
+Benzene is the only aromatic contestant.
