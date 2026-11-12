@@ -1,0 +1,26 @@
+[project]
+name = "benzene-langgraph"
+version = "0.1.0"
+description = "Kekulé Benzene (C6H6) LangGraph using Gemini 4 Hydrogen and Carbon nodes with preserved C=C double bonding"
+readme = "README.md"
+authors = [
+    { name = "Zach Gardner", email = "locriani@gmail.com" }
+]
+requires-python = ">=3.13"
+dependencies = [
+    "google-genai>=3.3.0",
+    "langchain-google-genai>=4.5.0",
+    "langgraph>=1.2.21",
+]
+
+[project.scripts]
+benzene-langgraph = "benzene_langgraph:main"
+
+[build-system]
+requires = ["uv_build>=0.13.6,<0.14.0"]
+build-backend = "uv_build"
+
+[dependency-groups]
+dev = [
+    "pytest>=9.2.0",
+]

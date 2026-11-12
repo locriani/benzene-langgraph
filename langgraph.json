@@ -1,0 +1,6 @@
+{
+  "dependencies": ["."],
+  "graphs": {
+    "benzene": "./src/benzene_langgraph/graph.py:graph"
+  }
+}
