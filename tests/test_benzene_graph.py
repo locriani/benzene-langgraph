@@ -172,3 +172,22 @@ def test_free_tier_429_and_remote_disconnect_resilience(monkeypatch: pytest.Monk
     assert res.content == "stabilized-orbital"
     assert created_backends == [None, True]
     assert poll_count == 2
+
+
+def test_only_hydrogens_get_url_context_tool(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Hydrogens may visit web pages; Carbons on the Hydrogen fallback path stay bond-local."""
+    seen_tools: list[Any] = []
+
+    class FakeDelegate:
+        def invoke(self, messages: Any, stop: Any = None, **kwargs: Any) -> AIMessage:
+            seen_tools.append(kwargs.get("tools"))
+            return AIMessage(content="orbital")
+
+    monkeypatch.setattr(models, "build_raw_chat_model", lambda **kw: FakeDelegate())
+    monkeypatch.setattr(models, "_SHARED_CARBON_FALLBACK", "aistudio_hydrogen_xhigh")
+
+    msgs = [HumanMessage(content="Summarize https://example.com")]
+    create_hydrogen_model(atom="H1", api_key="dummy-key").invoke(msgs)
+    create_carbon_model(atom="C1", api_key="dummy-key").invoke(msgs)
+
+    assert seen_tools == [[{"url_context": {}}], None]
