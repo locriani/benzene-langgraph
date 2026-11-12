@@ -401,7 +401,9 @@ class ResilientAtomChatModel(BaseChatModel):
                 project=self.project,
                 location=self.location,
             )
-        return self._h_delegate.invoke(messages, stop=stop)
+        # Hydrogens read the raw prompt, so they alone may visit its URLs; Carbons stay bond-local.
+        tools = [{"url_context": {}}] if self.element == "H" else None
+        return self._h_delegate.invoke(messages, stop=stop, tools=tools)
 
     def _invoke_carbon(self, messages: list[BaseMessage], stop: list[str] | None) -> AIMessage:
         mode = self._current_carbon_mode()
