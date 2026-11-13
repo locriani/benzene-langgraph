@@ -94,13 +94,15 @@ def test_runtime_double_bond_traversal_ratio(isomer: KekuleIsomer, cycles: int) 
 
 
 def test_benchmark_stoichiometry_and_huckel() -> None:
-    """The ledger sees all 24 graph calls vs. 1 per monatomic model, and only benzene is aromatic."""
+    """The ledger sees every graph call vs. 1 per monatomic model, and only benzene is aromatic."""
     from benzene_langgraph.bench import run
 
     rows = {r["contestant"].split()[0]: r for r in run(("Is benzene aromatic?",), mock=True)}
 
-    assert set(rows) == {"C6H6", "H", "C", "Ar"}
+    assert set(rows) == {"C6H6", "C3H8", "H", "C", "Ar"}
     assert rows["C6H6"]["calls"] == 24  # 6 Hydrogens + 6 Carbons x 3 rounds
+    assert rows["C3H8"]["calls"] == 11  # 8 Hydrogens + 3 Carbons, each Carbon exactly once
+    assert all(f"**{c} (CH" in rows["C3H8"]["trials"][0]["answer"] for c in ("C1", "C2", "C3"))
     assert all(rows[k]["calls"] == 1 for k in ("H", "C", "Ar"))
     assert [k for k, r in rows.items() if r["huckel"]] == ["C6H6"]
 
