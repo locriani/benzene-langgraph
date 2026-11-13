@@ -1,4 +1,4 @@
-"""Aromatic Reasoning Benchmark: the C6H6 graph vs. a C3H8 propane graph and monatomic H, C and Ar.
+"""Aromatic Reasoning Benchmark: the C6H6 graph vs. propane and butane graphs and monatomic H, C and Ar.
 
 Every number is measured, never estimated:
   reaction time   wall-clock seconds per answer
@@ -58,42 +58,49 @@ def huckel(pi_electrons: int) -> bool:
     return pi_electrons > 0 and (pi_electrons - 2) % 4 == 0
 
 
-# Propane CH3-CH2-CH3: the Hydrogens on each Carbon, in chain order.
-PROPANE = {"C1": ("H1", "H2", "H3"), "C2": ("H4", "H5"), "C3": ("H6", "H7", "H8")}
+ALKANES = {3: "propane", 4: "butane"}
 
 
-class PropaneState(TypedDict, total=False):
+def alkane_chain(n: int) -> dict[str, tuple[str, ...]]:
+    """Straight-chain CnH2n+2: each Carbon's Hydrogens in chain order (4 minus its C-C bonds)."""
+    hs = iter(f"H{i}" for i in range(1, 2 * n + 3))
+    return {f"C{i}": tuple(next(hs) for _ in range(4 - (i > 1) - (i < n))) for i in range(1, n + 1)}
+
+
+class AlkaneState(TypedDict, total=False):
     prompt: str
     orbitals: Annotated[dict[str, str], merge_dicts]
 
 
-def build_propane_graph(*, mock: bool = False) -> CompiledStateGraph:
-    """Propane (C3H8), the aliphatic control: benzene's atoms and prompts, sigma bonds only.
+def build_alkane_graph(n: int, *, mock: bool = False) -> CompiledStateGraph:
+    """A straight-chain alkane (propane, butane), the aliphatic controls: benzene's atoms and prompts, sigma bonds only.
 
-    Its 8 Hydrogens are equivalent, so they get no facets. Each Carbon waits for its Hydrogens
-    and the Carbon before it, so the chain fires C1 -> C2 -> C3 once each: 11 calls, 0 pi electrons.
+    Its Hydrogens are equivalent, so they get no facets. Each Carbon waits for its Hydrogens and
+    the Carbon before it, so the chain fires C1 -> ... -> Cn once each: 3n + 2 calls, 0 pi electrons.
     """
-    def atom_node(atom: str, model: Any, system: str, inputs: tuple[str, ...]) -> Callable[[PropaneState], dict]:
-        def node(state: PropaneState) -> dict:
+    molecule = f"{ALKANES[n]} (C{n}H{2 * n + 2})"
+
+    def atom_node(atom: str, model: Any, system: str, inputs: tuple[str, ...]) -> Callable[[AlkaneState], dict]:
+        def node(state: AlkaneState) -> dict:
             bonds = "".join(f"\n[{src}->{atom}] {state['orbitals'][src]}" for src in inputs)
             human = f"User query: {state['prompt']}{bonds}" if inputs else state["prompt"]
             reply = model.invoke([SystemMessage(content=system), HumanMessage(content=human)])
             return {"orbitals": {atom: extract_text(reply)}}
         return node
 
-    builder = StateGraph(PropaneState)
+    builder = StateGraph(AlkaneState)
     prev: str | None = None
-    for c, hs in PROPANE.items():
+    for c, hs in alkane_chain(n).items():
         for h in hs:
             builder.add_node(h, atom_node(h, create_hydrogen_model(atom=h, mock=mock), (
                 f"You are {h} (Gemini 4 Hydrogen, 1s substituent orbital, valency=1) covalently "
-                f"single-bonded to {c} in a propane (C3H8) reasoning chain.\n"
+                f"single-bonded to {c} in a {molecule} reasoning chain.\n"
                 "Produce a tight, high-signal 3-5 bullet analysis (<=120 words) to donate "
                 "across your C-H sigma bond."), ()))
             builder.add_edge(START, h)
         inputs = (*hs, prev) if prev else hs
         builder.add_node(c, atom_node(c, create_carbon_model(atom=c, mock=mock), (
-            f"You are {c} (Gemini 4 Carbon, sp3, valency=4) in propane (C3H8).\n"
+            f"You are {c} (Gemini 4 Carbon, sp3, valency=4) in {molecule}.\n"
             f"Your 4 covalent bonds: {len(hs)}x C-H and {4 - len(hs)}x C-C single.\n"
             "Synthesize and refine the reasoning passed strictly across your covalent bonds "
             "in one dense paragraph (<=120 words)."), inputs))
@@ -103,15 +110,20 @@ def build_propane_graph(*, mock: bool = False) -> CompiledStateGraph:
     return builder.compile()
 
 
-def propane_synthesis(state: PropaneState) -> str:
-    items = (f"- **{c} (CH{len(hs)}):** {' '.join(state['orbitals'][c].splitlines())}" for c, hs in PROPANE.items())
-    return "\n\n".join(["### Propane (C3H8) Synthesis", *items])
+def alkane_contestant(n: int, mock: bool) -> tuple[str, int, Callable[[str, dict], str]]:
+    graph, formula = build_alkane_graph(n, mock=mock), f"C{n}H{2 * n + 2}"
+
+    def answer(p: str, cfg: dict) -> str:
+        orbitals = graph.invoke({"prompt": p}, config=cfg)["orbitals"]
+        items = (f"- **{c} (CH{len(hs)}):** {' '.join(orbitals[c].splitlines())}" for c, hs in alkane_chain(n).items())
+        return "\n\n".join([f"### {ALKANES[n].title()} ({formula}) Synthesis", *items])
+
+    return f"{formula} {ALKANES[n]} graph", 0, answer
 
 
 def contestants(mock: bool) -> list[tuple[str, int, Callable[[str, dict], str]]]:
     """(name, pi electrons, answer(prompt, config)) for each contestant."""
     benzene = build_benzene_graph(mock=mock)
-    propane = build_propane_graph(mock=mock)
     h = create_hydrogen_model(atom="H", mock=mock)
     c = create_carbon_model(atom="C", mock=mock)
     ar = create_argon_model(atom="Ar", mock=mock)
@@ -119,7 +131,8 @@ def contestants(mock: bool) -> list[tuple[str, int, Callable[[str, dict], str]]]
     return [
         ("C6H6 benzene graph", 2 * len(KEKULE_ISOMERS["A"].double_bonds),
          lambda p, cfg: benzene.invoke({"prompt": p}, config=cfg)["aromatic_synthesis"]),
-        ("C3H8 propane graph", 0, lambda p, cfg: propane_synthesis(propane.invoke({"prompt": p}, config=cfg))),
+        alkane_contestant(3, mock),
+        alkane_contestant(4, mock),
         (f"H ({HYDROGEN_MODEL_ID})", 0, ask(h)),
         (f"C ({CARBON_MODEL_ID})", 0, ask(c)),
         (f"Ar ({ARGON_MODEL_ID})", 0, ask(ar)),

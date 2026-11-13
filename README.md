@@ -50,21 +50,22 @@ uv run benzene-langgraph --mermaid
 # Run verification test suite
 uv run pytest -v
 
-# Aromatic Reasoning Benchmark (live, ~130 Gemini calls) or an offline dry run
+# Aromatic Reasoning Benchmark (live, ~175 Gemini calls) or an offline dry run
 uv run python -m benzene_langgraph.bench
 uv run python -m benzene_langgraph.bench --mock
 ```
 
 ## Benchmark
 
-The [Aromatic Reasoning Benchmark](BENCHMARK.md) runs the benzene graph against a propane graph (C₃H₈, the aliphatic control) and lone `gemini-4-hydrogen`, `gemini-4-carbon` and `gemini-4-argon` atoms. A blind judge scored three prompts per contestant (run 2026-11-12, raw data in [`benchmarks/results.json`](benchmarks/results.json)):
+The [Aromatic Reasoning Benchmark](BENCHMARK.md) runs the benzene graph against propane (C₃H₈) and butane (C₄H₁₀) graphs, the aliphatic controls, and lone `gemini-4-hydrogen`, `gemini-4-carbon` and `gemini-4-argon` atoms. A blind judge scored three prompts per contestant (run 2026-11-12 and 2026-11-13, raw data in [`benchmarks/results.json`](benchmarks/results.json)):
 
 | Contestant | Reaction time (s) | Calls | Molar mass (tokens) | Yield (0-100) | Hückel |
 |---|---:|---:|---:|---:|:---:|
 | C6H6 benzene graph | 98.8 | 24 | 25,587 | 58.7 | ✅ |
 | C3H8 propane graph | 106.5 | 11 | 10,633 | 54.0 | ❌ |
+| C4H10 butane graph | 357.5 | 14 | 15,633 | 55.0 | ❌ |
 | H (gemini-4-hydrogen) | 14.4 | 1 | 2,382 | 97.3 | ❌ |
 | C (gemini-4-carbon) | 62.9 | 1 | 1,417 | 96.7 | ❌ |
 | Ar (gemini-4-argon) | 75.5 | 1 | 1,364 | 95.7 | ❌ |
 
-Benzene is the only aromatic contestant. Propane spends 42% of its tokens for 4.7 fewer points of yield.
+Benzene is the only aromatic contestant. Propane spends 42% of its tokens for 4.7 fewer points of yield, and butane 61% for 3.7 fewer.
