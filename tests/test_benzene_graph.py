@@ -93,6 +93,18 @@ def test_runtime_double_bond_traversal_ratio(isomer: KekuleIsomer, cycles: int) 
         assert f"{cb}=>{ca}" not in result["pi_channels"]
 
 
+def test_benchmark_stoichiometry_and_huckel() -> None:
+    """The ledger sees all 24 graph calls vs. 1 per monatomic model, and only benzene is aromatic."""
+    from benzene_langgraph.bench import run
+
+    rows = {r["contestant"].split()[0]: r for r in run(("Is benzene aromatic?",), mock=True)}
+
+    assert set(rows) == {"C6H6", "H", "C", "Ar"}
+    assert rows["C6H6"]["calls"] == 24  # 6 Hydrogens + 6 Carbons x 3 rounds
+    assert all(rows[k]["calls"] == 1 for k in ("H", "C", "Ar"))
+    assert [k for k, r in rows.items() if r["huckel"]] == ["C6H6"]
+
+
 def test_gemini_4_model_configuration() -> None:
     """Hydrogen & Carbon raw factories configure Gemini 4 IDs, thinking_config, and temperature=None."""
     h_raw = build_raw_chat_model(
@@ -124,10 +136,31 @@ def test_gemini_4_model_configuration() -> None:
     assert isinstance(create_carbon_model(atom="C1", api_key="dummy-key"), ResilientAtomChatModel)
 
 
+def test_carbon_without_quota_raises_instead_of_becoming_hydrogen(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A Free-Tier 429 surfaces as an error: no reroute, no retry, no Hydrogen stand-in."""
+    creates: list[Any] = []
+
+    class FreeTierInteractions:
+        def create(self, **kwargs: Any) -> Any:
+            creates.append(kwargs)
+            raise RuntimeError("429 RESOURCE_EXHAUSTED limit: 0 on FreeTier")
+
+    class FreeTierClient:
+        interactions = FreeTierInteractions()
+
+    def no_hydrogen(**kw: Any) -> Any:
+        raise AssertionError("Carbon must not fall back to a Hydrogen model")
+
+    monkeypatch.setattr(models, "build_genai_client", lambda **kw: FreeTierClient())
+    monkeypatch.setattr(models, "build_raw_chat_model", no_hydrogen)
+
+    with pytest.raises(RuntimeError, match="429"):
+        create_carbon_model(atom="C1", api_key="free-tier-key").invoke([HumanMessage(content="test")])
+    assert len(creates) == 1
+
+
 def test_free_tier_429_and_remote_disconnect_resilience(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Carbon recovers from Free-Tier 429 limit=0 and RemoteProtocolError drops via background polling."""
-    monkeypatch.setattr(models, "_SHARED_CARBON_FALLBACK", "none")
-    monkeypatch.setattr(models, "resolve_vertex_adc", lambda project_override=None: ("creds", "proj-1"))
+    """Carbon survives RemoteProtocolError drops during background polling."""
     monkeypatch.setattr(models.time, "sleep", lambda _: None)
 
     created_backends: list[bool | None] = []
@@ -145,8 +178,6 @@ def test_free_tier_429_and_remote_disconnect_resilience(monkeypatch: pytest.Monk
 
         def create(self, **kwargs: Any) -> FakeInteraction:
             created_backends.append(self.vertexai)
-            if self.vertexai is None:
-                raise RuntimeError("429 RESOURCE_EXHAUSTED limit: 0 on FreeTier")
             return FakeInteraction("in_progress")
 
         def get(self, interaction_id: str) -> FakeInteraction:
@@ -170,7 +201,7 @@ def test_free_tier_429_and_remote_disconnect_resilience(monkeypatch: pytest.Monk
     res = c_model.invoke([HumanMessage(content="test")])
 
     assert res.content == "stabilized-orbital"
-    assert created_backends == [None, True]
+    assert created_backends == [None]
     assert poll_count == 2
 
 

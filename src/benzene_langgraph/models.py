@@ -1,4 +1,4 @@
-"""Gemini 4 Hydrogen and Carbon model factories with Interactions background polling & quota fallback.
+"""Gemini 4 Hydrogen and Carbon model factories with Interactions background polling.
 
 Why Carbon uses `client.interactions.create(..., background=True, store=True)`:
   - `gemini-4-carbon` frequently spends 60+ seconds generating internal thinking tokens
@@ -34,20 +34,16 @@ from langchain_core.outputs import ChatGeneration, ChatResult
 from langchain_google_genai import ChatGoogleGenerativeAI
 from pydantic import PrivateAttr
 
-from benzene_langgraph.chemistry import CARBON_MODEL_ID, HYDROGEN_MODEL_ID
+from benzene_langgraph.chemistry import ARGON_MODEL_ID, CARBON_MODEL_ID, HYDROGEN_MODEL_ID
 
 HydrogenThinkingLevel = Literal["low", "medium", "high", "xhigh"]
 CarbonThinkingLevel = Literal["low", "medium", "high"]
-CarbonFallbackMode = Literal["none", "vertex_carbon", "aistudio_hydrogen_xhigh"]
 
 _CLOUD_PLATFORM_SCOPE = "https://www.googleapis.com/auth/cloud-platform"
 
 _AUTH_LOCK = threading.Lock()
 _ADC_CACHE: tuple[Any, str] | None = None
 _ADC_PROBED = False
-
-_FALLBACK_LOCK = threading.Lock()
-_SHARED_CARBON_FALLBACK: CarbonFallbackMode = "none"
 
 
 def extract_text(message: BaseMessage) -> str:
@@ -190,16 +186,11 @@ def build_genai_client(
     vertexai: bool | None = None,
     project: str | None = None,
     location: str = "global",
-    single_attempt_http: bool = False,
 ) -> genai.Client:
     """Construct a `google.genai.Client` for either Gemini Developer API or Vertex AI."""
     resolved_key = _resolve_api_key(api_key)
     use_vertex = bool(vertexai) or (vertexai is None and not resolved_key)
-    http_opts = (
-        HttpOptions(retry_options=HttpRetryOptions(attempts=1))
-        if single_attempt_http
-        else HttpOptions(retry_options=HttpRetryOptions(attempts=2))
-    )
+    http_opts = HttpOptions(retry_options=HttpRetryOptions(attempts=2))
 
     if use_vertex:
         adc = resolve_vertex_adc(project_override=project)
@@ -232,7 +223,6 @@ def build_raw_chat_model(
     vertexai: bool | None = None,
     project: str | None = None,
     location: str = "global",
-    single_attempt_http: bool = False,
 ) -> ChatGoogleGenerativeAI:
     """Construct an underlying ChatGoogleGenerativeAI client (used by Hydrogen & tests)."""
     resolved_key = _resolve_api_key(api_key)
@@ -244,7 +234,7 @@ def build_raw_chat_model(
         "temperature": None,
         "thinking_config": {"thinking_level": thinking_level},
         "timeout": timeout,
-        "max_retries": 1 if single_attempt_http else 2,
+        "max_retries": 2,
         "name": f"{atom}_{model_id}",
     }
 
@@ -264,10 +254,7 @@ def build_raw_chat_model(
     elif resolved_key is not None:
         kwargs["google_api_key"] = resolved_key
 
-    llm = ChatGoogleGenerativeAI(**kwargs)
-    if single_attempt_http and hasattr(llm, "client") and hasattr(llm.client, "_api_client"):
-        llm.client._api_client._http_options.retry_options = HttpRetryOptions(attempts=1)
-    return llm
+    return ChatGoogleGenerativeAI(**kwargs)
 
 
 def run_carbon_background_interaction(
@@ -278,8 +265,8 @@ def run_carbon_background_interaction(
     thinking_level: str,
     poll_interval: float = 2.0,
     timeout: float = 1200.0,
-) -> str:
-    """Execute Gemini 4 Carbon via `interactions.create(background=True, store=True)`.
+) -> AIMessage:
+    """Execute Gemini 4 Carbon (or Argon) via `interactions.create(background=True, store=True)`.
 
     Short-lived poll GETs completely avoid 60-second GFE HTTP/1.1 header disconnects
     during extended Carbon thinking phases.
@@ -315,9 +302,20 @@ def run_carbon_background_interaction(
             f"Interaction {interaction_id} ({model_id}) ended with status={interaction.status!r}"
         )
 
+    usage = getattr(interaction, "usage", None)
+    usage_metadata = (
+        {
+            "input_tokens": usage.total_input_tokens or 0,
+            "output_tokens": usage.total_output_tokens or 0,
+            "total_tokens": usage.total_tokens or 0,
+        }
+        if usage is not None
+        else None
+    )
+
     output_text = getattr(interaction, "output_text", None)
     if isinstance(output_text, str) and output_text.strip():
-        return output_text.strip()
+        return AIMessage(content=output_text.strip(), usage_metadata=usage_metadata)
 
     # Fallback step extraction if output_text property is absent
     dump = interaction.model_dump() if hasattr(interaction, "model_dump") else {}
@@ -327,14 +325,14 @@ def run_carbon_background_interaction(
             for part in step.get("content", []) or []:
                 if isinstance(part, dict) and part.get("type") == "text":
                     chunks.append(str(part.get("text", "")))
-    return "".join(chunks).strip()
+    return AIMessage(content="".join(chunks).strip(), usage_metadata=usage_metadata)
 
 
 class ResilientAtomChatModel(BaseChatModel):
     """LangChain BaseChatModel using fast generate_content for Hydrogen and background Interactions for Carbon."""
 
     atom: str
-    element: Literal["H", "C"]
+    element: Literal["H", "C", "Ar"]
     gemini_model: str
     thinking_level: str
     timeout: float = 1200.0
@@ -350,54 +348,15 @@ class ResilientAtomChatModel(BaseChatModel):
     def _llm_type(self) -> str:
         return f"resilient-{self.gemini_model}"
 
-    def _current_carbon_mode(self) -> CarbonFallbackMode:
-        if self.element != "C" or self.vertexai is True:
-            return "none"
-        return _SHARED_CARBON_FALLBACK
-
-    def _activate_carbon_free_tier_fallback(self) -> None:
-        global _SHARED_CARBON_FALLBACK
-        with _FALLBACK_LOCK:
-            if _SHARED_CARBON_FALLBACK != "none":
-                return
-            adc = resolve_vertex_adc(project_override=self.project)
-            if adc is not None:
-                _, resolved_proj = adc
-                _SHARED_CARBON_FALLBACK = "vertex_carbon"
-                print(
-                    f"Note: AI Studio key is on Free Tier ({CARBON_MODEL_ID} limit=0); "
-                    f"routing Carbon nodes (C1-C6) via Vertex AI "
-                    f"(project={resolved_proj}, location={self.location}).",
-                    file=sys.stderr,
-                    flush=True,
-                )
-            else:
-                _SHARED_CARBON_FALLBACK = "aistudio_hydrogen_xhigh"
-                print(
-                    f"Note: AI Studio key is on Free Tier ({CARBON_MODEL_ID} limit=0) "
-                    f"and no Vertex AI ADC project was found; falling back Carbon nodes "
-                    f"(C1-C6) to {HYDROGEN_MODEL_ID} (thinking_level=xhigh).",
-                    file=sys.stderr,
-                    flush=True,
-                )
-
-    def _invoke_hydrogen(
-        self,
-        messages: list[BaseMessage],
-        stop: list[str] | None,
-        *,
-        thinking_override: str | None = None,
-        force_rebuild: bool = False,
-        force_aistudio: bool = False,
-    ) -> AIMessage:
-        if force_rebuild or self._h_delegate is None:
+    def _invoke_hydrogen(self, messages: list[BaseMessage], stop: list[str] | None) -> AIMessage:
+        if self._h_delegate is None:
             self._h_delegate = build_raw_chat_model(
                 model_id=HYDROGEN_MODEL_ID,
                 atom=self.atom,
-                thinking_level=thinking_override or self.thinking_level,
+                thinking_level=self.thinking_level,
                 timeout=self.timeout,
                 api_key=self.api_key,
-                vertexai=False if force_aistudio else self.vertexai,
+                vertexai=self.vertexai,
                 project=self.project,
                 location=self.location,
             )
@@ -406,33 +365,20 @@ class ResilientAtomChatModel(BaseChatModel):
         return self._h_delegate.invoke(messages, stop=stop, tools=tools)
 
     def _invoke_carbon(self, messages: list[BaseMessage], stop: list[str] | None) -> AIMessage:
-        mode = self._current_carbon_mode()
-        if mode == "aistudio_hydrogen_xhigh":
-            return self._invoke_hydrogen(
-                messages,
-                stop,
-                thinking_override="xhigh",
-                force_aistudio=True,
-            )
-
-        use_vertex = True if mode == "vertex_carbon" else self.vertexai
-        probe_fast = use_vertex is None and bool(_resolve_api_key(self.api_key))
         client = build_genai_client(
-            api_key=None if use_vertex else self.api_key,
-            vertexai=use_vertex,
+            api_key=self.api_key,
+            vertexai=self.vertexai,
             project=self.project,
             location=self.location,
-            single_attempt_http=probe_fast,
         )
         prompt_text = format_messages_for_interaction(messages)
-        text = run_carbon_background_interaction(
+        return run_carbon_background_interaction(
             client=client,
-            model_id=CARBON_MODEL_ID,
+            model_id=self.gemini_model,
             prompt_text=prompt_text,
             thinking_level=self.thinking_level,
             timeout=self.timeout,
         )
-        return AIMessage(content=text)
 
     def _generate(
         self,
@@ -444,22 +390,13 @@ class ResilientAtomChatModel(BaseChatModel):
         last_exc: BaseException | None = None
         for attempt in range(self.max_transport_retries + 1):
             try:
-                if self.element == "C":
+                if self.element != "H":  # Carbon and Argon both think long; use background polling
                     ai_msg = self._invoke_carbon(messages, stop)
                 else:
                     ai_msg = self._invoke_hydrogen(messages, stop)
                 return ChatResult(generations=[ChatGeneration(message=ai_msg)])
             except Exception as exc:
                 last_exc = exc
-                if (
-                    self.element == "C"
-                    and self.vertexai is not True
-                    and _is_free_tier_zero_quota(exc)
-                ):
-                    self._activate_carbon_free_tier_fallback()
-                    self._h_delegate = None
-                    continue
-
                 if attempt < self.max_transport_retries and _is_transient_disconnect_or_overload(
                     exc
                 ):
@@ -484,7 +421,7 @@ class MockAtomChatModel(BaseChatModel):
     """Deterministic BaseChatModel for offline simulation & topology testing."""
 
     atom: str
-    element: Literal["H", "C"]
+    element: Literal["H", "C", "Ar"]
     gemini_model: str
     thinking_level: str
 
@@ -576,3 +513,9 @@ def create_carbon_model(
         project=project,
         location=location,
     )
+
+
+def create_argon_model(*, atom: str = "Ar", thinking_level: CarbonThinkingLevel = "low", mock: bool = False) -> BaseChatModel:
+    """Instantiate a Gemini 4 Argon (`gemini-4-argon`) model: a noble gas, so it joins no ring (valency 0)."""
+    cls = MockAtomChatModel if mock else ResilientAtomChatModel
+    return cls(atom=atom, element="Ar", gemini_model=ARGON_MODEL_ID, thinking_level=thinking_level)
