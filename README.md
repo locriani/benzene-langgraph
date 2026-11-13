@@ -20,9 +20,9 @@ A Kekulé Benzene ($C_6H_6$) multi-agent `StateGraph` built with **LangGraph** a
 
 ```bash
 # Run with Gemini API key or Google Cloud Vertex AI ADC
-# (If GEMINI_API_KEY is on AI Studio Free Tier where gemini-4-carbon has limit=0,
-# Carbon nodes automatically route via Vertex AI ADC if available, or fall back to
-# gemini-4-hydrogen@xhigh.)
+# (Carbon nodes need gemini-4-carbon quota: on AI Studio Free Tier, where it has
+# limit=0, the run fails with the API's 429. Use --vertexai or a paid key.
+# A Carbon node is never replaced by another element.)
 export GEMINI_API_KEY="your-api-key"
 uv run benzene-langgraph "Design a Byzantine-resilient consensus protocol."
 

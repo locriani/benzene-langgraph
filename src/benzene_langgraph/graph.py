@@ -300,7 +300,7 @@ def build_benzene_graph(
             across 18 multi-node Carbon invocations.
         mock: If True, use deterministic offline MockAtomChatModel instances instead of API calls.
         api_key: Optional explicit Gemini API key (otherwise reads GEMINI_API_KEY / GOOGLE_API_KEY).
-        vertexai: Optional flag to route via Vertex AI (auto-used as fallback if Free Tier 429 occurs).
+        vertexai: Optional flag to route via Vertex AI.
         project: Optional GCP project ID for Vertex AI (otherwise auto-detected from ADC).
         location: Vertex AI location (default "global" for Gemini 4 models).
     """

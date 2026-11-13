@@ -136,10 +136,31 @@ def test_gemini_4_model_configuration() -> None:
     assert isinstance(create_carbon_model(atom="C1", api_key="dummy-key"), ResilientAtomChatModel)
 
 
+def test_carbon_without_quota_raises_instead_of_becoming_hydrogen(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A Free-Tier 429 surfaces as an error: no reroute, no retry, no Hydrogen stand-in."""
+    creates: list[Any] = []
+
+    class FreeTierInteractions:
+        def create(self, **kwargs: Any) -> Any:
+            creates.append(kwargs)
+            raise RuntimeError("429 RESOURCE_EXHAUSTED limit: 0 on FreeTier")
+
+    class FreeTierClient:
+        interactions = FreeTierInteractions()
+
+    def no_hydrogen(**kw: Any) -> Any:
+        raise AssertionError("Carbon must not fall back to a Hydrogen model")
+
+    monkeypatch.setattr(models, "build_genai_client", lambda **kw: FreeTierClient())
+    monkeypatch.setattr(models, "build_raw_chat_model", no_hydrogen)
+
+    with pytest.raises(RuntimeError, match="429"):
+        create_carbon_model(atom="C1", api_key="free-tier-key").invoke([HumanMessage(content="test")])
+    assert len(creates) == 1
+
+
 def test_free_tier_429_and_remote_disconnect_resilience(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Carbon recovers from Free-Tier 429 limit=0 and RemoteProtocolError drops via background polling."""
-    monkeypatch.setattr(models, "_SHARED_CARBON_FALLBACK", "none")
-    monkeypatch.setattr(models, "resolve_vertex_adc", lambda project_override=None: ("creds", "proj-1"))
+    """Carbon survives RemoteProtocolError drops during background polling."""
     monkeypatch.setattr(models.time, "sleep", lambda _: None)
 
     created_backends: list[bool | None] = []
@@ -157,8 +178,6 @@ def test_free_tier_429_and_remote_disconnect_resilience(monkeypatch: pytest.Monk
 
         def create(self, **kwargs: Any) -> FakeInteraction:
             created_backends.append(self.vertexai)
-            if self.vertexai is None:
-                raise RuntimeError("429 RESOURCE_EXHAUSTED limit: 0 on FreeTier")
             return FakeInteraction("in_progress")
 
         def get(self, interaction_id: str) -> FakeInteraction:
@@ -182,5 +201,5 @@ def test_free_tier_429_and_remote_disconnect_resilience(monkeypatch: pytest.Monk
     res = c_model.invoke([HumanMessage(content="test")])
 
     assert res.content == "stabilized-orbital"
-    assert created_backends == [None, True]
+    assert created_backends == [None]
     assert poll_count == 2

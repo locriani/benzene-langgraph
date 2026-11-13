@@ -15,7 +15,7 @@ We ask whether resonance-stabilized multi-agent reasoning beats monatomic fronti
 | **C** | a lone `gemini-4-carbon` atom | `low` |
 | **Ar** | a lone `gemini-4-argon` atom (noble gas, valency 0) | `low` |
 
-Each single atom gets the same thinking level its element uses inside the graph. Argon has no position in the graph, so it gets Carbon's level. Carbon and Argon run through the background Interactions API, and Hydrogen runs through `generate_content`.
+Each single atom gets the same thinking level its element uses inside the graph. Argon has no position in the graph, so it gets Carbon's level. Carbon and Argon run through the background Interactions API, and Hydrogen runs through `generate_content`. No element ever stands in for another: if `gemini-4-carbon` cannot run, the benchmark stops with an error and records nothing. That applies to the graph's Carbons, the Carbon baseline and the judge.
 
 ## Method
 
