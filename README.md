@@ -7,7 +7,7 @@ A Kekulé Benzene ($C_6H_6$) multi-agent `StateGraph` built with **LangGraph** a
   - **Kekulé Isomer A (default):** `C1=C2`, `C3=C4`, `C5=C6` (double) and `C2-C3`, `C4-C5`, `C6-C1` (single)
   - **Kekulé Isomer B:** `C2=C3`, `C4=C5`, `C6=C1` (double) and `C1-C2`, `C3-C4`, `C5-C6` (single)
 
-Only Hydrogens browse. Carbons reason strictly over what crosses their bonds, so web content reaches the ring through the C–H bonds, and that holds even when Carbon falls back to the Hydrogen model.
+Only Hydrogens browse. Carbons reason strictly over what crosses their bonds, so web content reaches the ring through the C–H bonds.
 
 ```
 W(n) := node n may fetch web pages      H(n) := n is a Hydrogen node
