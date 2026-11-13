@@ -99,10 +99,12 @@ def test_benchmark_stoichiometry_and_huckel() -> None:
 
     rows = {r["contestant"].split()[0]: r for r in run(("Is benzene aromatic?",), mock=True)}
 
-    assert set(rows) == {"C6H6", "C3H8", "H", "C", "Ar"}
+    assert set(rows) == {"C6H6", "C3H8", "C4H10", "H", "C", "Ar"}
     assert rows["C6H6"]["calls"] == 24  # 6 Hydrogens + 6 Carbons x 3 rounds
     assert rows["C3H8"]["calls"] == 11  # 8 Hydrogens + 3 Carbons, each Carbon exactly once
+    assert rows["C4H10"]["calls"] == 14  # 10 Hydrogens + 4 Carbons
     assert all(f"**{c} (CH" in rows["C3H8"]["trials"][0]["answer"] for c in ("C1", "C2", "C3"))
+    assert "**C2 (CH2):**" in rows["C4H10"]["trials"][0]["answer"] and "**C4 (CH3):**" in rows["C4H10"]["trials"][0]["answer"]
     assert all(rows[k]["calls"] == 1 for k in ("H", "C", "Ar"))
     assert [k for k, r in rows.items() if r["huckel"]] == ["C6H6"]
 
